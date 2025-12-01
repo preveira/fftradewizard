@@ -1,12 +1,17 @@
-import Layout from "./components/Layout";
-import RosRankings from "./components/RosRankings";
-import TradeAnalyzer from "./components/TradeAnalyzer";
+import React, { useState } from 'react';
+import Layout from './components/Layout';
+import RosRankings from './components/RosRankings';
+import TradeAnalyzer from './components/TradeAnalyzer';
 
-export default function App() {
+function App() {
+  const [view, setView] = useState('rankings');
+
   return (
-    <Layout>
-      <RosRankings />
-      <TradeAnalyzer />
+    <Layout selectedView={view} onSelectView={setView}>
+      {view === 'rankings' && <RosRankings />}
+      {view === 'trade' && <TradeAnalyzer />}
     </Layout>
   );
 }
+
+export default App;
