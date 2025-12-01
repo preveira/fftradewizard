@@ -1,6 +1,7 @@
+import json
 import logging
 import os
-from typing import List, Dict
+from typing import Dict, List, Optional
 
 import requests
 
@@ -9,150 +10,261 @@ from .models import DEFAULT_PLAYERS
 
 logger = logging.getLogger(__name__)
 
-BALLDONTLIE_API_KEY = os.getenv("BALLDONTLIE_API_KEY")
-BALLDONTLIE_BASE_URL = "https://api.balldontlie.io/nfl/v1"
+# ---------------------------------------------------------------------
+# ESPN Fantasy Football API configuration (test-friendly defaults)
+# ---------------------------------------------------------------------
+# We call the same underlying endpoint that the espn-fantasy-football-api
+# JS client wraps:
+#
+#   https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/{YEAR}/players?view=players_wl
+#
+# plus an X-Fantasy-Filter header to:
+#   * increase the limit (default is small)
+#   * filter to active players only
+#
+# To keep things "test sized" while you build, we allow tuning via env:
+#   ESPN_SEASON            -> season year (default 2025)
+#   ESPN_MAX_PLAYERS       -> max players to pull (default 400)
+#   ESPN_MIN_PERCENT_OWNED -> min percentOwned to be considered "relevant"
+#
+# If anything fails (network, ESPN changes, etc.), we fall back to
+# DEFAULT_PLAYERS from models.py.
+# ---------------------------------------------------------------------
 
-# We’ll populate this at import time.
+ESPN_SEASON: int = int(os.getenv("ESPN_SEASON", "2025"))
+ESPN_MAX_PLAYERS: int = int(os.getenv("ESPN_MAX_PLAYERS", "400"))
+ESPN_MIN_PERCENT_OWNED: float = float(os.getenv("ESPN_MIN_PERCENT_OWNED", "20.0"))
+
+ESPN_S2 = os.getenv("ESPN_S2")       # optional cookie, if needed later
+ESPN_SWID = os.getenv("ESPN_SWID")   # optional cookie, if needed later
+
+# Global player pool, loaded at import time
 PLAYER_POOL: List[Player] = []
 
+# Fantasy scoring weights (same pattern as before)
+USAGE_WEIGHT = 0.03
+SOS_WEIGHT = 0.10
 
-# ---------- External API integration ----------
 
-def _position_defaults(position_abbr: str) -> dict:
+# ---------------------------------------------------------------------
+# ESPN helper utilities
+# ---------------------------------------------------------------------
+
+
+def _map_position_id(pos_id: Optional[int]) -> Optional[str]:
     """
-    Simple heuristics for fantasy fields when using real players.
-    These are NOT real fantasy stats; just reasonable defaults per position.
+    Map ESPN defaultPositionId -> our position abbreviations.
+
+    Common mapping (community-documented):
+        1: QB, 2: RB, 3: WR, 4: TE, 5: K, 16: DST
+
+    We only care about QB/RB/WR/TE for this app.
     """
-    position_abbr = position_abbr.upper()
+    mapping = {
+        1: "QB",
+        2: "RB",
+        3: "WR",
+        4: "TE",
+        5: "K",
+        16: "DST",
+    }
+    pos = mapping.get(pos_id or 0)
+    if pos in {"K", "DST"}:
+        return None
+    return pos
 
-    if position_abbr == "QB":
-        return {"fppg": 18.0, "usage": 35.0, "sos": 5.0, "remaining_games": 8}
-    if position_abbr == "RB":
-        return {"fppg": 14.0, "usage": 18.0, "sos": 5.0, "remaining_games": 8}
-    if position_abbr == "WR":
-        return {"fppg": 13.0, "usage": 8.0, "sos": 5.0, "remaining_games": 8}
-    if position_abbr == "TE":
-        return {"fppg": 9.0, "usage": 6.0, "sos": 5.0, "remaining_games": 8}
 
-    # K, DEF, etc.
-    return {"fppg": 7.0, "usage": 1.0, "sos": 5.0, "remaining_games": 8}
-
-
-def _load_players_from_api() -> List[Player]:
+def _position_defaults(position: str) -> dict:
     """
-    Load NFL players from the BALLDONTLIE NFL API.
-
-    NOTE:
-    - Free tier can use /players but NOT /players/active.
-    - Auth format is: Authorization: YOUR_API_KEY (no 'Bearer ').
+    Heuristic defaults for fantasy fields when ESPN doesn't give us
+    direct projections. These keep ROS math stable and "reasonable".
     """
-    if not BALLDONTLIE_API_KEY:
-        raise RuntimeError("BALLDONTLIE_API_KEY env var is not set.")
+    position = position.upper()
+    if position == "QB":
+        return {"fppg": 18.0, "usage": 0.75, "sos": 0.50, "remaining_games": 5}
+    if position == "RB":
+        return {"fppg": 14.0, "usage": 0.70, "sos": 0.50, "remaining_games": 5}
+    if position == "WR":
+        return {"fppg": 13.0, "usage": 0.70, "sos": 0.50, "remaining_games": 5}
+    if position == "TE":
+        return {"fppg": 10.0, "usage": 0.65, "sos": 0.50, "remaining_games": 5}
+    return {"fppg": 10.0, "usage": 0.60, "sos": 0.50, "remaining_games": 5}
 
-    url = f"{BALLDONTLIE_BASE_URL}/players"
 
-    # 🔐 Per docs: Authorization: YOUR_API_KEY
-    headers = {"Authorization": BALLDONTLIE_API_KEY}
+def _fetch_espn_players_raw() -> List[dict]:
+    """
+    Call the ESPN Fantasy players endpoint in a test-friendly way:
+      * Season = ESPN_SEASON (default 2025)
+      * Limit to ESPN_MAX_PLAYERS
+      * Only active players (filterActive)
+    """
+    season = ESPN_SEASON
+    url = (
+        f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/"
+        f"seasons/{season}/players"
+    )
 
     params = {
-        "per_page": 100,  # first 100 players
+        "view": "players_wl",
+        "scoringPeriodId": 0,  # preseason / full pool
     }
 
-    resp = requests.get(url, headers=headers, params=params, timeout=10)
+    fantasy_filter = {
+        "players": {"limit": ESPN_MAX_PLAYERS},
+        "filterActive": {"value": True},
+    }
+
+    headers = {
+        "Accept": "application/json",
+        "X-Fantasy-Filter": json.dumps(fantasy_filter),
+    }
+
+    cookies = {}
+    if ESPN_S2:
+        cookies["espn_s2"] = ESPN_S2
+    if ESPN_SWID:
+        cookies["SWID"] = ESPN_SWID
+
+    logger.info(
+        "Loading players from ESPN Fantasy API (season=%s, max_players=%s, min_owned=%s)",
+        season,
+        ESPN_MAX_PLAYERS,
+        ESPN_MIN_PERCENT_OWNED,
+    )
+
+    resp = requests.get(
+        url,
+        params=params,
+        headers=headers,
+        cookies=cookies or None,
+        timeout=15,
+    )
     resp.raise_for_status()
-    payload = resp.json()
+    data = resp.json()
 
-    data = payload.get("data", [])
+    if not isinstance(data, list):
+        raise ValueError("Unexpected ESPN players payload format (expected list)")
+
+    return data
+
+
+def _load_players_from_espn() -> List[Player]:
+    """
+    Convert ESPN player JSON into our Player objects, with a filter that
+    approximates "fantasy-relevant players":
+
+      - defaultPositionId in {QB, RB, WR, TE}
+      - ownership.percentOwned >= ESPN_MIN_PERCENT_OWNED
+    """
+    raw_players = _fetch_espn_players_raw()
+
     players: List[Player] = []
+    min_owned = ESPN_MIN_PERCENT_OWNED
 
-    for item in data:
-        pos_abbr = (item.get("position_abbreviation") or "").upper()
-        # Focus on fantasy-relevant positions.
-        if pos_abbr not in {"QB", "RB", "WR", "TE"}:
+    for item in raw_players:
+        try:
+            pos = _map_position_id(item.get("defaultPositionId"))
+            if not pos:
+                # Skip K/DST/unknown for this app
+                continue
+
+            full_name = item.get("fullName")
+            if not full_name:
+                continue
+
+            ownership = item.get("ownership") or {}
+            percent_owned = float(ownership.get("percentOwned") or 0.0)
+            if percent_owned < min_owned:
+                # Treat "relevant" as "owned in at least X% of leagues"
+                continue
+
+            pro_team_id = item.get("proTeamId")
+            # For now, just label by team ID; you can map IDs -> abbreviations later if you want.
+            team_label = f"Team {pro_team_id}" if pro_team_id is not None else "NFL"
+
+            defaults = _position_defaults(pos)
+
+            player = Player(
+                id=str(item.get("id")),
+                name=str(full_name),
+                team=team_label,
+                position=pos,
+                fppg=defaults["fppg"],
+                usage=defaults["usage"],
+                sos=defaults["sos"],
+                remaining_games=defaults["remaining_games"],
+            )
+            players.append(player)
+        except Exception as inner_exc:
+            logger.debug("Skipping ESPN player due to parse error: %s", inner_exc)
             continue
 
-        team_obj = item.get("team") or {}
-        team_abbr = team_obj.get("abbreviation", "").upper()
-
-        first = item.get("first_name") or ""
-        last = item.get("last_name") or ""
-        name = f"{first} {last}".strip()
-
-        defaults = _position_defaults(pos_abbr)
-
-        player = Player(
-            id=str(item.get("id")),
-            name=name,
-            team=team_abbr,
-            position=pos_abbr,
-            fppg=defaults["fppg"],
-            usage=defaults["usage"],
-            sos=defaults["sos"],
-            remaining_games=defaults["remaining_games"],
-        )
-        players.append(player)
-
     if not players:
-        raise RuntimeError("No suitable players returned from API.")
+        raise RuntimeError("ESPN API returned 0 usable players after filtering")
 
-    logger.info("Loaded %d players from BALLDONTLIE API.", len(players))
+    logger.info("Loaded %d relevant players from ESPN Fantasy API", len(players))
     return players
 
 
 def _init_player_pool() -> List[Player]:
     """
-    Try to load real players from the external API.
-    If anything fails, fall back to DEFAULT_PLAYERS.
+    Try to load from ESPN; on any failure, fall back to DEFAULT_PLAYERS.
     """
     try:
-        return _load_players_from_api()
+        players = _load_players_from_espn()
+        logger.info("Using ESPN Fantasy player pool.")
+        return players
     except Exception as exc:
         logger.warning(
-            "Failed to load players from BALLDONTLIE API (%s). "
+            "Failed to load players from ESPN Fantasy API (%s). "
             "Falling back to DEFAULT_PLAYERS.",
             exc,
         )
         return DEFAULT_PLAYERS
 
 
-# Initialize global player pool at import time.
+# Initialize global PLAYER_POOL at import time
 PLAYER_POOL = _init_player_pool()
 
 
-# ---------- Fantasy math / trade logic ----------
-
-USAGE_WEIGHT = 0.03
-SOS_WEIGHT = 0.10
+# ---------------------------------------------------------------------
+# Fantasy math / ROS + trade logic (compatible with existing main.py)
+# ---------------------------------------------------------------------
 
 
 def calculate_ros_points(player: Player) -> float:
     """
     Compute rest-of-season fantasy points for a player based on:
-    - FPPG (real or heuristic)
+    - FPPG (fantasy points per game)
     - remaining games
-    - usage (targets/carries)
-    - strength of schedule (sos)
+    - usage (0–1 "share" of offense)
+    - strength of schedule (sos, 0–1 where ~0.5 is neutral)
     """
     base_ros = player.fppg * player.remaining_games
 
-    usage_bonus_factor = 1 + (USAGE_WEIGHT * player.usage)
+    # Usage: boost high-usage players
+    usage_bonus_factor = 1 + (USAGE_WEIGHT * (player.usage * 10))
 
-    # sos is 1–10, where 5 is neutral
-    sos_factor = 1 + (SOS_WEIGHT * (player.sos - 5) / 5)
+    # SOS: adjust slightly for easier/harder schedule
+    sos_factor = 1 + (SOS_WEIGHT * (0.5 - player.sos))
 
     ros_points = base_ros * usage_bonus_factor * sos_factor
     return round(ros_points, 2)
 
 
-def get_players_by_position(position: str | None = None) -> List[Player]:
+def get_players_by_position(position: Optional[str] = None) -> List[Player]:
+    """
+    Return all players or only those with a matching position (QB/RB/WR/TE).
+    """
     if position is None:
         return PLAYER_POOL
-    return [p for p in PLAYER_POOL if p.position.upper() == position.upper()]
+    position = position.upper()
+    return [p for p in PLAYER_POOL if p.position.upper() == position]
 
 
-def get_ros_rankings(position: str | None = None) -> List[ROSResult]:
+def get_ros_rankings(position: Optional[str] = None) -> List[ROSResult]:
     """
-    Return ROS rankings for either all players or a single position.
+    Return ROS rankings, optionally filtered by position.
     """
     players = get_players_by_position(position)
     results: List[ROSResult] = []
@@ -180,14 +292,31 @@ def _build_player_index() -> Dict[str, Player]:
     return {p.id: p for p in PLAYER_POOL}
 
 
-def analyze_trade(team_a_ids: list[str], team_b_ids: list[str]) -> TradeAnalysis:
+def _verdict_from_delta(delta_a: float) -> str:
+    if abs(delta_a) < 10:
+        return "Fair trade for both sides."
+    if 10 <= delta_a < 30:
+        return "Slight edge for Team A."
+    if delta_a >= 30:
+        return "Big win for Team A."
+    if -30 < delta_a <= -10:
+        return "Slight edge for Team B."
+    if delta_a <= -30:
+        return "Big win for Team B."
+    return "Balanced trade."
+
+
+def analyze_trade(team_a_ids: List[str], team_b_ids: List[str]) -> TradeAnalysis:
     """
-    Analyze the trade from Team A's perspective using the current PLAYER_POOL,
-    which may come from the external API or fallback static data.
+    Analyze the trade from Team A's perspective.
+    This signature matches what main.py expects.
+
+    - team_a_ids: players Team A is giving up
+    - team_b_ids: players Team B is giving up
     """
     index = _build_player_index()
 
-    def total(ids: list[str]) -> float:
+    def total(ids: List[str]) -> float:
         return sum(
             calculate_ros_points(index[player_id])
             for player_id in ids
@@ -208,17 +337,3 @@ def analyze_trade(team_a_ids: list[str], team_b_ids: list[str]) -> TradeAnalysis
         delta_a=delta_a,
         verdict=verdict,
     )
-
-
-def _verdict_from_delta(delta_a: float) -> str:
-    if abs(delta_a) < 10:
-        return "Fair trade for both sides."
-    if 10 <= delta_a < 30:
-        return "Slight edge for Team A."
-    if delta_a >= 30:
-        return "Big win for Team A."
-    if -30 < delta_a <= -10:
-        return "Slight edge for Team B."
-    if delta_a <= -30:
-        return "Big win for Team B."
-    return "Balanced trade."
