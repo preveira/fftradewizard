@@ -1,0 +1,24 @@
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: fftradewizard-backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./backend/.env
+    # You can add this if you want auto-restart behavior:
+    # restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: fftradewizard-frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
