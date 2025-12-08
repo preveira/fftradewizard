@@ -1,74 +1,54 @@
-from typing import List, Optional
-
+# backend/app/main.py
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 
-from .services import (
-    get_players_by_position,
-    get_ros_rankings,
-    analyze_trade,
-)
-
-
-class TradeRequest(BaseModel):
-    team_a: List[str]
-    team_b: List[str]
-
+from .models import ROSResult, TradeAnalysis, TradeRequest, PlayerBase
+from .services import get_ros_rankings, analyze_trade, get_players
 
 app = FastAPI(title="FFTradeWizard API")
 
-# CORS: allow both local dev and Dockerized frontend
+# --- CORS SETUP ---
+
+# OPTION A (safe & explicit): list the actual frontend domains
 origins = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "http://localhost:8080",
-    "http://127.0.0.1:8080",
+    "http://localhost:5173",              # Vite dev
+    "http://localhost:8080",              # Docker/Vite dev
+    "https://fftradewizard.netlify.app",  # your Netlify URL (adjust if different)
 ]
+
+# OPTION B (easier for a class project): allow everything
+# origins = ["*"]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=origins,       # or ["*"] if you choose Option B
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# --- ROUTES ---
 
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
-
-
-@app.get("/players")
-async def players(position: Optional[str] = Query(default=None)):
+@app.get("/rankings/ros", response_model=list[ROSResult])
+def rankings_ros(position: str | None = Query(default=None)):
     """
-    Optional query param:
-      - /players
-      - /players?position=RB
+    Rest-of-season rankings endpoint.
+    Optional ?position=QB/RB/WR/TE/K/DST filter.
     """
-    return get_players_by_position(position)
+    return get_ros_rankings(position_filter=position)
 
 
-@app.get("/rankings/ros")
-async def rankings(position: Optional[str] = Query(default=None)):
+@app.get("/players", response_model=list[PlayerBase])
+def list_players(position: str | None = Query(default=None)):
     """
-    Optional query param:
-      - /rankings/ros
-      - /rankings/ros?position=WR
+    Flat player pool (used internally / earlier versions).
     """
-    return get_ros_rankings(position)
+    return get_players(position_filter=position)
 
 
-@app.post("/trade/analyze")
-async def trade(request: TradeRequest):
+@app.post("/trade/analyze", response_model=TradeAnalysis)
+def trade_analyze(payload: TradeRequest):
     """
-    Body shape (matches frontend api.js):
-
-    {
-      "team_a": ["player_id_1", "player_id_2"],
-      "team_b": ["player_id_3"]
-    }
+    Analyze a proposed trade using ROS scores.
     """
-    result = analyze_trade(request.team_a, request.team_b)
-    return result
+    return analyze_trade(payload)
