@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { fetchPlayers, analyzeTrade } from '../api';
+import { fetchRosRankings, analyzeTrade } from '../api';
 
 const POSITIONS = ['ALL', 'QB', 'RB', 'WR', 'TE'];
 
@@ -13,12 +13,26 @@ const TradeAnalyzer = () => {
   const [analysis, setAnalysis] = useState(null);
   const [error, setError] = useState('');
 
+  // Load from ROS rankings so pool == "active relevant" players
   const loadPlayers = async () => {
     try {
       setLoadingPlayers(true);
       setError('');
-      const data = await fetchPlayers();
-      setPlayerPool(data || []);
+      const data = await fetchRosRankings(); // same source as rankings page
+
+      // Flatten ROSResult objects into simple player entries for the trade UI
+      let flattened = (Array.isArray(data) ? data : []).map((row) => ({
+        id: row.player.id,
+        name: row.player.name,
+        team: row.player.team,
+        position: row.player.position,
+        rosScore: row.ros_score ?? row.ros_points ?? 0,
+      }));
+
+      // 🔽 Sort highest ROS score → lowest
+      flattened.sort((a, b) => b.rosScore - a.rosScore);
+
+      setPlayerPool(flattened);
     } catch (err) {
       console.error(err);
       setError('Unable to load player pool.');
@@ -91,8 +105,8 @@ const TradeAnalyzer = () => {
         <div>
           <h3 className="panel__title">Trade Analyzer</h3>
           <p className="panel__subtitle">
-            Build each side of a trade from the live player pool, then let FFTradeWizard
-            compare rest-of-season value.
+            Build each side of a trade from the live ROS-ranked player pool, then let
+            FFTradeWizard compare rest-of-season value.
           </p>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -134,7 +148,7 @@ const TradeAnalyzer = () => {
         {/* Left: Player pool */}
         <div>
           <p className="panel__subtitle" style={{ margin: '0 0 0.5rem' }}>
-            Player pool · filtered by position · click a button to add to a side.
+            Player pool · pulled from ROS rankings (highest ROS at top) · click to add to a side.
           </p>
           <div className="rankings-card__scroll" style={{ maxHeight: 320 }}>
             <table className="table">
@@ -143,18 +157,19 @@ const TradeAnalyzer = () => {
                   <th>Player</th>
                   <th>Team</th>
                   <th>Pos</th>
+                  <th>ROS</th>
                   <th style={{ width: 140 }}>Add to</th>
                 </tr>
               </thead>
               <tbody>
                 {loadingPlayers && (
                   <tr>
-                    <td colSpan={4}>Loading players…</td>
+                    <td colSpan={5}>Loading players…</td>
                   </tr>
                 )}
                 {!loadingPlayers && filteredPool.length === 0 && (
                   <tr>
-                    <td colSpan={4}>No players found for this filter.</td>
+                    <td colSpan={5}>No players found for this filter.</td>
                   </tr>
                 )}
                 {!loadingPlayers &&
@@ -163,6 +178,7 @@ const TradeAnalyzer = () => {
                       <td>{p.name}</td>
                       <td>{p.team}</td>
                       <td>{p.position}</td>
+                      <td>{p.rosScore.toFixed(1)}</td>
                       <td>
                         <div style={{ display: 'flex', gap: '0.35rem' }}>
                           <button

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { fetchRosRankings } from '../api';
 
-const POSITIONS = ['ALL', 'QB', 'RB', 'WR', 'TE'];
+const POSITIONS = ['ALL', 'QB', 'RB', 'WR', 'TE', 'K', 'D/ST'];
 
 const RosRankings = () => {
   const [position, setPosition] = useState('ALL');
@@ -14,7 +14,7 @@ const RosRankings = () => {
       setLoading(true);
       setError('');
       const data = await fetchRosRankings(pos === 'ALL' ? undefined : pos);
-      setRankings(data || []);
+      setRankings(Array.isArray(data) ? data : []);
     } catch (err) {
       console.error(err);
       setError('Unable to load rankings right now.');
@@ -34,8 +34,8 @@ const RosRankings = () => {
         <div>
           <h3 className="panel__title">Rest-of-Season Player Rankings</h3>
           <p className="panel__subtitle">
-            Sorted by projected ROS value · filter by position and scroll through
-            the leaderboard.
+            Sorted by projected ROS value · filter by position and scroll through the
+            leaderboard.
           </p>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -57,6 +57,7 @@ const RosRankings = () => {
       </div>
 
       {loading && <p style={{ fontSize: '0.85rem' }}>Loading rankings…</p>}
+
       {error && (
         <p
           style={{
@@ -78,21 +79,53 @@ const RosRankings = () => {
                 <th>Player</th>
                 <th>Team</th>
                 <th>Pos</th>
-                <th>ROS Pts</th>
+                <th>Total Pts</th>
+                <th>ROS Score</th>
+                <th>Week Proj</th>
+                <th>Matchup</th>
                 <th>Tier</th>
               </tr>
             </thead>
             <tbody>
               {rankings.map((row, idx) => (
-                <tr key={row.player.id}>
+                <tr key={row.player.id || `${row.player.name}-${idx}`}>
                   <td>{idx + 1}</td>
-                  <td>{row.player.name}</td>
-                  <td>{row.player.team}</td>
-                  <td>{row.player.position}</td>
-                  <td>{row.ros_points}</td>
-                  <td>{row.tier}</td>
+                  <td>{row.player?.name}</td>
+                  <td>{row.player?.team}</td>
+                  <td>{row.player?.position}</td>
+
+                  {/* Total points scored so far */}
+                  <td>
+                    {Number(row.season_points ?? 0).toFixed(2)}
+                  </td>
+
+                  {/* ROS score */}
+                  <td>
+                    {Number(
+                      row.ros_score ?? row.ros_points ?? 0
+                    ).toFixed(2)}
+                  </td>
+
+                  {/* Current week projection */}
+                  <td>
+                    {Number(row.week_projection ?? 0).toFixed(2)}
+                  </td>
+
+                  {/* Team matchup string */}
+                  <td>{row.matchup || 'N/A'}</td>
+
+                  {/* Tier (S/A/B/C/D) */}
+                  <td>{row.tier || 'D'}</td>
                 </tr>
               ))}
+
+              {rankings.length === 0 && (
+                <tr>
+                  <td colSpan={9} style={{ textAlign: 'center', fontSize: '0.85rem' }}>
+                    No players found for this filter.
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
