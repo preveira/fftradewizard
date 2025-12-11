@@ -22,7 +22,7 @@ ESPN_MIN_PERCENT_OWNED = float(os.getenv("ESPN_MIN_PERCENT_OWNED", "0.0"))
 TEAM_MAP: Dict[int, str] = {
     1: "ATL", 2: "BUF", 3: "CHI", 4: "CIN", 5: "CLE", 6: "DAL", 7: "DEN",
     8: "DET", 9: "GB", 10: "TEN", 11: "IND", 12: "KC", 13: "LV", 14: "LAR",
-    15: "MIAMI", 16: "MIN", 17: "NE", 18: "NO", 19: "NYG", 20: "NYJ",
+    15: "MIA", 16: "MIN", 17: "NE", 18: "NO", 19: "NYG", 20: "NYJ",
     21: "PHI", 22: "ARI", 23: "PIT", 24: "LAC", 25: "SF", 26: "SEA",
     27: "TB", 28: "WSH", 29: "CAR", 30: "JAX", 33: "BAL", 34: "HOU"
 }
@@ -42,7 +42,7 @@ def _fetch_espn_players_raw() -> Optional[List[dict]]:
     """
     url = f"{ESPN_BASE_URL}/seasons/{ESPN_SEASON}/players"
     params = {
-        "scoringPeriodId": 0,
+        "scoringPeriodId": 0,        # 0 = season totals
         "view": "players_wl",
     }
 
@@ -194,6 +194,8 @@ def _extract_basic_info(raw: dict) -> Optional[Player]:
     percent_owned = ownership.get("percentOwned")
     percent_started = ownership.get("percentStarted")
 
+    # fppg: we currently approximate from percentOwned just as a placeholder.
+    # You can replace this with real ESPN scoring logic later if you want.
     if isinstance(percent_owned, (int, float)):
         fppg = float(percent_owned) / 10.0
     else:
@@ -221,7 +223,15 @@ def _extract_basic_info(raw: dict) -> Optional[Player]:
 
 def _extract_fantasy_totals(raw: dict, current_week: int) -> Dict[str, float]:
     """
-    Extract season-to-date fantasy points and projections.
+    Extract season-to-date fantasy points and projections from ESPN's 'stats' list.
+
+    ESPN conventions (simplified and more robust):
+      - statSourceId == 0  -> actual stats
+      - statSourceId == 1  -> projected stats
+      - scoringPeriodId == 0 -> season total
+      - scoringPeriodId == current_week -> that week's projection
+
+    We ignore statSplitTypeId because it can vary and isn't needed for these basics.
     """
     stats = raw.get("stats", [])
     if not isinstance(stats, list):
@@ -237,25 +247,20 @@ def _extract_fantasy_totals(raw: dict, current_week: int) -> Dict[str, float]:
 
     for s in stats:
         try:
-            source = s.get("statSourceId")
-            split = s.get("statSplitTypeId")
+            source = s.get("statSourceId")          # 0 = actual, 1 = projected
             scoring_period = s.get("scoringPeriodId")
             applied_total = float(s.get("appliedTotal", 0.0))
 
-            # Actual season-to-date
-            if source == 0 and split == 1:
+            # Season-to-date actual points (scoringPeriodId == 0)
+            if source == 0 and scoring_period == 0:
                 season_points = max(season_points, applied_total)
 
-            # Projected full-season total
-            if source == 1 and split == 1:
+            # Full-season projected total (scoringPeriodId == 0, projected)
+            if source == 1 and scoring_period == 0:
                 projected_season = max(projected_season, applied_total)
 
             # Projected points for the configured week
-            if (
-                source == 1
-                and split == 0
-                and scoring_period == current_week
-            ):
+            if source == 1 and scoring_period == current_week:
                 week_projection = max(week_projection, applied_total)
         except Exception:
             continue
@@ -417,7 +422,6 @@ def get_players_by_position(position: Optional[str] = None) -> List[Player]:
     return [p for p in PLAYER_POOL if p.position.upper() == pos]
 
 
-# NEW: this is what main.py will import and await
 async def get_player_pool(position: Optional[str] = None) -> List[Player]:
     """
     Async wrapper to fetch the player pool, optionally filtered by position.
@@ -430,16 +434,20 @@ async def get_ros_rankings(position: Optional[str] = None) -> List[ROSResult]:
     """
     Return ROS rankings including:
       - Player, team, position
-      - Total points scored so far
-      - Current week projection
+      - Total points scored so far (season_points)
+      - Projected points for the current week (week_projection)
       - Matchup string (e.g., '@ KC' / 'vs DAL')
       - Dynamic tier label (S/A/B/C/D)
+
+    Values are derived directly from ESPN stats when available.
     """
     players = get_players_by_position(position)
 
     results: List[ROSResult] = []
+
     for p in players:
         ros_score = calculate_ros_score(p)
+
         result = ROSResult(
             player=p,
             ros_points=ros_score,
@@ -451,8 +459,10 @@ async def get_ros_rankings(position: Optional[str] = None) -> List[ROSResult]:
         )
         results.append(result)
 
+    # Sort by ROS score descending
     results.sort(key=lambda r: r.ros_score, reverse=True)
 
+    # Assign tiers
     total = len(results)
     for idx, r in enumerate(results):
         r.tier = tier_for_rank(idx, total)
