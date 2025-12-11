@@ -1,4 +1,5 @@
 from typing import List
+
 from .schemas import Player
 
 # Static fallback player data for development or when
@@ -10,8 +11,8 @@ DEFAULT_PLAYERS: List[Player] = [
         team="MIN",
         position="WR",
         fppg=18.5,
-        usage=10.2,        # targets per game
-        sos=7.5,           # strength of schedule 1–10
+        usage=0.30,        # ~30% team target share
+        sos=0.5,           # mid difficulty schedule
         remaining_games=7,
     ),
     Player(
@@ -20,8 +21,8 @@ DEFAULT_PLAYERS: List[Player] = [
         team="CIN",
         position="WR",
         fppg=17.3,
-        usage=9.8,
-        sos=6.0,
+        usage=0.28,
+        sos=0.55,
         remaining_games=7,
     ),
     Player(
@@ -30,8 +31,8 @@ DEFAULT_PLAYERS: List[Player] = [
         team="SF",
         position="RB",
         fppg=21.7,
-        usage=20.0,        # touches per game
-        sos=5.0,
+        usage=0.40,        # very high usage RB
+        sos=0.45,          # slightly easier schedule
         remaining_games=7,
     ),
     # 👉 You can add more static players here if you like.

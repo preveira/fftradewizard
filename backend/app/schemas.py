@@ -44,3 +44,12 @@ class TradeAnalysis(BaseModel):
     team_b_total: float
     delta_a: float
     verdict: str
+
+
+class TradeRequest(BaseModel):
+    """
+    Request body for /trade/analyze.
+    Frontend sends lists of player IDs for each side.
+    """
+    team_a_ids: List[str]
+    team_b_ids: List[str]
