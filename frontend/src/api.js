@@ -1,10 +1,26 @@
 // frontend/src/api.js
 
-// Base URL for the backend.
-// - In local dev (no env var): http://localhost:8000
-// - In Docker / Render: set VITE_BACKEND_URL to your backend URL or service name.
+// Resolve backend base URL:
+//
+// Priority:
+//   1. VITE_BACKEND_URL or VITE_API_BASE_URL (for flexibility)
+//   2. If running on localhost -> http://localhost:8000
+//   3. Otherwise -> Render backend: https://fftradewizard.onrender.com
+//
+const envBase =
+  import.meta.env.VITE_BACKEND_URL || import.meta.env.VITE_API_BASE_URL;
+
+const isBrowser = typeof window !== "undefined";
+const isLocalhost =
+  isBrowser &&
+  (window.location.hostname === "localhost" ||
+    window.location.hostname === "127.0.0.1");
+
 const BACKEND_BASE_URL =
-  import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
+  envBase ||
+  (isLocalhost
+    ? "http://localhost:8000"
+    : "https://fftradewizard.onrender.com");
 
 /**
  * Helper to build a full URL from a path.
@@ -16,122 +32,98 @@ function buildUrl(path) {
 }
 
 /**
- * Get ROS rankings from the backend.
- * position: "ALL" | "QB" | "RB" | "WR" | "TE" | "K" | "D/ST"
- * Returns the full JSON object from /rankings/ros.
+ * Helper to handle JSON responses / errors.
  */
-export async function getRosRankings(position = "ALL") {
-  try {
-    const url = new URL(buildUrl("/rankings/ros"));
-
-    if (position && position !== "ALL") {
-      url.searchParams.set("position", position);
-    }
-
-    const res = await fetch(url.toString());
-    if (!res.ok) {
-      throw new Error(`Failed to fetch ROS rankings: ${res.status}`);
-    }
-
-    const data = await res.json();
-    // Expected shape:
-    // {
-    //   position: string,
-    //   generated_at: string,
-    //   players: [
-    //     {
-    //       id: number,
-    //       name: string,
-    //       team: string,
-    //       position: string,
-    //       ros_score: number,
-    //       tier_label: string,
-    //       total_points: number | null,
-    //       weekly_projection: number | null,
-    //       matchup: string | null
-    //     },
-    //     ...
-    //   ]
-    // }
-    return data;
-  } catch (err) {
-    console.error("Error in getRosRankings:", err);
-    throw err;
+async function handleResponse(res) {
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(
+      `API error ${res.status}: ${text || res.statusText || "Unknown error"}`
+    );
   }
+  return res.json();
 }
 
 /**
- * Backwards-compatible alias for older components.
- * RosRankings.jsx currently imports { fetchRosRankings }.
+ * Get ROS rankings from the backend.
+ * position: "QB" | "RB" | "WR" | "TE" | "K" | "D/ST" | undefined
+ * If omitted/undefined → all positions.
+ *
+ * Backend returns:
+ *   [
+ *     {
+ *       player: { id, name, team, position, ... },
+ *       ros_points,
+ *       ros_score,
+ *       season_points,
+ *       week_projection,
+ *       matchup,
+ *       tier
+ *     },
+ *     ...
+ *   ]
  */
-export const fetchRosRankings = getRosRankings;
+export async function fetchRosRankings(position) {
+  const url = new URL(buildUrl("/rankings/ros"));
+
+  if (position) {
+    url.searchParams.set("position", position);
+  }
+
+  const res = await fetch(url.toString(), {
+    method: "GET",
+  });
+
+  return handleResponse(res);
+}
+
+// Backwards-compatible alias for any old imports
+export const getRosRankings = fetchRosRankings;
 
 /**
  * Fetch the player pool for the Trade Analyzer.
- * Returns an array of players.
+ * Optional position filter.
+ *
+ * Backend returns:
+ *   [
+ *     Player,
+ *     ...
+ *   ]
  */
-export async function fetchPlayers() {
-  try {
-    const res = await fetch(buildUrl("/players"));
-
-    if (!res.ok) {
-      throw new Error(`Failed to fetch players: ${res.status}`);
-    }
-
-    const data = await res.json();
-    // Expected shape:
-    // [
-    //   {
-    //     id: number,
-    //     name: string,
-    //     team: string,
-    //     position: string,
-    //     ros_score: number,
-    //     total_points?: number,
-    //     weekly_projection?: number,
-    //     matchup?: string
-    //   },
-    //   ...
-    // ]
-    return data;
-  } catch (err) {
-    console.error("Error in fetchPlayers:", err);
-    throw err;
+export async function fetchPlayers(position) {
+  const url = new URL(buildUrl("/players"));
+  if (position) {
+    url.searchParams.set("position", position);
   }
+
+  const res = await fetch(url.toString(), {
+    method: "GET",
+  });
+
+  return handleResponse(res);
 }
 
 /**
  * Call the backend trade analysis endpoint.
  * teamAIds / teamBIds are arrays of player IDs.
+ *
+ * Backend expects POST /trade/analyze
+ * with JSON:
+ *   { team_a_ids: string[], team_b_ids: string[] }
  */
 export async function analyzeTrade(teamAIds, teamBIds) {
-  try {
-    const res = await fetch(buildUrl("/trades/analyze"), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        team_a_ids: teamAIds,
-        team_b_ids: teamBIds,
-      }),
-    });
+  const url = buildUrl("/trade/analyze"); // <-- FIXED PATH (no extra "s")
 
-    if (!res.ok) {
-      throw new Error(`Trade analysis failed: ${res.status}`);
-    }
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      team_a_ids: teamAIds,
+      team_b_ids: teamBIds,
+    }),
+  });
 
-    const data = await res.json();
-    // Expected shape:
-    // {
-    //   team_a_total: number,
-    //   team_b_total: number,
-    //   delta_a: number,
-    //   verdict: string
-    // }
-    return data;
-  } catch (err) {
-    console.error("Error in analyzeTrade:", err);
-    throw err;
-  }
+  return handleResponse(res);
 }
