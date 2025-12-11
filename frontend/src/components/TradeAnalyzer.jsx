@@ -27,6 +27,8 @@ const TradeAnalyzer = () => {
         team: row.player.team,
         position: row.player.position,
         rosScore: row.ros_score ?? row.ros_points ?? 0,
+        seasonPoints: row.season_points ?? 0,     // total fantasy points scored
+        weekProjection: row.week_projection ?? 0, // projected score for current week
       }));
 
       // 🔽 Sort highest ROS score → lowest
@@ -158,18 +160,20 @@ const TradeAnalyzer = () => {
                   <th>Team</th>
                   <th>Pos</th>
                   <th>ROS</th>
-                  <th style={{ width: 140 }}>Add to</th>
+                  <th>Season Pts</th> {/* total fantasy points */}
+                  <th>Week Proj</th>   {/* projected score this week */}
+                  <th style={{ width: 160 }}>Add to</th>
                 </tr>
               </thead>
               <tbody>
                 {loadingPlayers && (
                   <tr>
-                    <td colSpan={5}>Loading players…</td>
+                    <td colSpan={7}>Loading players…</td>
                   </tr>
                 )}
                 {!loadingPlayers && filteredPool.length === 0 && (
                   <tr>
-                    <td colSpan={5}>No players found for this filter.</td>
+                    <td colSpan={7}>No players found for this filter.</td>
                   </tr>
                 )}
                 {!loadingPlayers &&
@@ -179,6 +183,8 @@ const TradeAnalyzer = () => {
                       <td>{p.team}</td>
                       <td>{p.position}</td>
                       <td>{p.rosScore.toFixed(1)}</td>
+                      <td>{p.seasonPoints.toFixed(1)}</td>
+                      <td>{p.weekProjection.toFixed(1)}</td>
                       <td>
                         <div style={{ display: 'flex', gap: '0.35rem' }}>
                           <button

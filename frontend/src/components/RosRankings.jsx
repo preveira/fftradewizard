@@ -79,9 +79,9 @@ const RosRankings = () => {
                 <th>Player</th>
                 <th>Team</th>
                 <th>Pos</th>
-                <th>Total Pts</th>
+                <th>Season Pts</th> {/* total fantasy points so far */}
                 <th>ROS Score</th>
-                <th>Week Proj</th>
+                <th>Week Proj</th>   {/* projected score for current week */}
                 <th>Matchup</th>
                 <th>Tier</th>
               </tr>
@@ -94,22 +94,16 @@ const RosRankings = () => {
                   <td>{row.player?.team}</td>
                   <td>{row.player?.position}</td>
 
-                  {/* Total points scored so far */}
+                  {/* Total fantasy points scored so far */}
+                  <td>{Number(row.season_points ?? 0).toFixed(2)}</td>
+
+                  {/* ROS score (enhanced metric) */}
                   <td>
-                    {Number(row.season_points ?? 0).toFixed(2)}
+                    {Number(row.ros_score ?? row.ros_points ?? 0).toFixed(2)}
                   </td>
 
-                  {/* ROS score */}
-                  <td>
-                    {Number(
-                      row.ros_score ?? row.ros_points ?? 0
-                    ).toFixed(2)}
-                  </td>
-
-                  {/* Current week projection */}
-                  <td>
-                    {Number(row.week_projection ?? 0).toFixed(2)}
-                  </td>
+                  {/* Projected score for the current week */}
+                  <td>{Number(row.week_projection ?? 0).toFixed(2)}</td>
 
                   {/* Team matchup string */}
                   <td>{row.matchup || 'N/A'}</td>
