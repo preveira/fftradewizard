@@ -4,7 +4,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from .services import get_ros_rankings, get_player_pool, analyze_trade
-from .models import TradeRequest
+from .schemas import TradeRequest
 
 app = FastAPI(
     title="FFTradeWizard API",
